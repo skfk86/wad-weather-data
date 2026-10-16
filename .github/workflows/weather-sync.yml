@@ -1,0 +1,59 @@
+# جلب بيانات الطقس — يعمل في هذا المستودع العام لأن GitHub Actions مجاني بلا حد للمستودعات العامة.
+# (كان في المستودع الخاص Wad-Al-Sahab- ويتوقف عند نفاد دقائق الخطة الشهرية)
+name: Weather Sync — طقس السودان
+
+on:
+  schedule:
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Dry run'
+        required: false
+        default: false
+        type: boolean
+
+concurrency:
+  group: weather-sync
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # رفع ملفات الطقس إلى هذا المستودع
+  pages: write      # طلب إعادة بناء GitHub Pages بعد التحديث
+
+jobs:
+  sync:
+    name: Fetch & Sync Weather Data
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install dependencies
+        working-directory: scripts/sync
+        run: npm ci --omit=dev || npm install --omit=dev
+
+      - name: Run weather sync
+        working-directory: scripts/sync
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          # التوكن المدمج يكفي للكتابة في نفس المستودع؛ GH_PAGES_TOKEN اختياري إن وُجد
+          GH_PAGES_TOKEN: ${{ secrets.GH_PAGES_TOKEN || github.token }}
+          GH_PAGES_REPO:  ${{ github.repository }}
+          DRY_RUN: ${{ inputs.dry_run || 'false' }}
+        run: node weather-sync.js
+
+      # الرفع بالتوكن المدمج لا يشغّل بناء Pages تلقائياً — نطلبه صراحة
+      - name: Trigger GitHub Pages build
+        if: success() && inputs.dry_run != true
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api -X POST "repos/${{ github.repository }}/pages/builds" --silent && echo "✅ Pages build requested"
