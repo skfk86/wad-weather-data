@@ -44,7 +44,7 @@ const TIMEZONE         = 'Africa/Khartoum';
 const FORECAST_DAYS    = 14;
 const FORECAST_HOURS   = 336;
 const BATCH_SIZE       = 10;
-const RETRY_LIMIT      = 3;
+const RETRY_LIMIT      = 4;
 const RETRY_DELAY_MS   = 2000;
 const FETCH_TIMEOUT_MS = 15000;
 
@@ -76,13 +76,20 @@ async function fetchWithRetry(url, attempt = 1) {
   try {
     const res = await fetch(url, { signal: controller.signal });
     clearTimeout(timer);
-    if (!res.ok) throw new Error(`HTTP ${res.status}: ${url.slice(0, 80)}`);
+    if (!res.ok) {
+      const err = new Error(`HTTP ${res.status}: ${url.slice(0, 80)}`);
+      err.status = res.status;
+      err.retryAfter = parseInt(res.headers.get('retry-after') || '0', 10) || 0;
+      throw err;
+    }
     return await res.json();
   } catch (e) {
     clearTimeout(timer);
     if (attempt >= RETRY_LIMIT) throw e;
-    LOG(`⚠️ Retry ${attempt}/${RETRY_LIMIT}: ${e.message}`);
-    await sleep(RETRY_DELAY_MS * attempt);
+    // [SYNC v3] 429 = حد Open-Meteo (عناوين GitHub مشتركة): انتظار أطول بدل 2–4 ثوانٍ
+    const wait = e.status === 429 ? Math.max(e.retryAfter * 1000, 30000 * attempt) : RETRY_DELAY_MS * attempt;
+    LOG(`⚠️ Retry ${attempt}/${RETRY_LIMIT} بعد ${Math.round(wait / 1000)}ث: ${e.message}`);
+    await sleep(wait);
     return fetchWithRetry(url, attempt + 1);
   }
 }
@@ -268,7 +275,7 @@ function buildFullFormat(rawData, cityKey) {
 async function fetchCitiesBatch(cityKeys) {
   const results = {};
   const valid   = cityKeys.filter(k => CITIES[k]);
-  const CHUNK   = 50;
+  const CHUNK   = 10; // [SYNC v3] كان 50 مدينة في طلب واحد = مئات «الاستدعاءات» دفعة واحدة فيتجاوز حد الدقيقة
 
   for (let i = 0; i < valid.length; i += CHUNK) {
     const chunk = valid.slice(i, i + CHUNK);
@@ -290,7 +297,7 @@ async function fetchCitiesBatch(cityKeys) {
       LOG(`❌ فشل: ${e.message}`);
       chunk.forEach(key => { results[key] = null; });
     }
-    if (i + CHUNK < valid.length) await sleep(1000);
+    if (i + CHUNK < valid.length) await sleep(12000);
   }
   return results;
 }
