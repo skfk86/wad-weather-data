@@ -412,6 +412,20 @@ async function writeToGitHubPages(allCompressed, allRaw) {
 
   if (DRY_RUN) { LOG(`🔵 DRY RUN — GitHub Pages: ${files.length} ملفات`); return; }
 
+  // [SYNC v3] كتابة محلية + commit واحد من الـ workflow (بدل 70 commit عبر API لكل مزامنة)
+  if (process.env.WRITE_LOCAL_DIR) {
+    const root = path.resolve(process.env.WRITE_LOCAL_DIR);
+    let n = 0;
+    for (const file of files) {
+      const out = path.join(root, file.path);
+      fs.mkdirSync(path.dirname(out), { recursive: true });
+      fs.writeFileSync(out, file.content);
+      n++;
+    }
+    LOG(`✅ كُتبت ${n} ملفات محلياً في ${root} — الـ workflow يرفعها في commit واحد`);
+    return;
+  }
+
   const headers = {
     'Authorization': `Bearer ${token}`,
     'Content-Type':  'application/json',

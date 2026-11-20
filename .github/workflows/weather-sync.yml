@@ -1,10 +1,12 @@
-# جلب بيانات الطقس — يعمل في هذا المستودع العام لأن GitHub Actions مجاني بلا حد للمستودعات العامة.
-# (كان في المستودع الخاص Wad-Al-Sahab- ويتوقف عند نفاد دقائق الخطة الشهرية)
+# جلب بيانات الطقس — مستودع عام (دقائق GitHub Actions مجانية بلا حد).
+# [SYNC v3] جدولة GitHub لا تلتزم بكل 30 دقيقة (كانت تعمل كل 7–9 ساعات)،
+# لذلك المهمة الواحدة تعمل ~5:50 ساعة وتزامن كل 30 دقيقة بنفسها، والجدولة كل ساعة
+# تضمن بدء مهمة جديدة فور انتهاء السابقة (لا تُلغى الجارية).
 name: Weather Sync — طقس السودان
 
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '17 * * * *'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -12,20 +14,24 @@ on:
         required: false
         default: false
         type: boolean
+      rounds:
+        description: 'عدد مرات المزامنة في هذه المهمة (كل 30 دقيقة)'
+        required: false
+        default: '11'
 
 concurrency:
   group: weather-sync
   cancel-in-progress: false
 
 permissions:
-  contents: write   # رفع ملفات الطقس إلى هذا المستودع
-  pages: write      # طلب إعادة بناء GitHub Pages بعد التحديث
+  contents: write
+  pages: write
 
 jobs:
   sync:
     name: Fetch & Sync Weather Data
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 355
 
     steps:
       - name: Checkout
@@ -40,20 +46,34 @@ jobs:
         working-directory: scripts/sync
         run: npm ci --omit=dev || npm install --omit=dev
 
-      - name: Run weather sync
-        working-directory: scripts/sync
+      - name: Sync loop (every 30 min)
         env:
           FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
-          # التوكن المدمج يكفي للكتابة في نفس المستودع؛ GH_PAGES_TOKEN اختياري إن وُجد
-          GH_PAGES_TOKEN: ${{ secrets.GH_PAGES_TOKEN || github.token }}
+          GH_PAGES_TOKEN: ${{ github.token }}
           GH_PAGES_REPO:  ${{ github.repository }}
+          GH_TOKEN:       ${{ github.token }}
+          WRITE_LOCAL_DIR: ${{ github.workspace }}
           DRY_RUN: ${{ inputs.dry_run || 'false' }}
-        run: node weather-sync.js
-
-      # الرفع بالتوكن المدمج لا يشغّل بناء Pages تلقائياً — نطلبه صراحة
-      - name: Trigger GitHub Pages build
-        if: success() && inputs.dry_run != true
-        continue-on-error: true
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: gh api -X POST "repos/${{ github.repository }}/pages/builds" --silent && echo "✅ Pages build requested"
+          ROUNDS: ${{ inputs.rounds || '11' }}
+        run: |
+          git config user.name  "weather-bot"
+          git config user.email "weather-bot@users.noreply.github.com"
+          for i in $(seq 1 "$ROUNDS"); do
+            start=$(date +%s)
+            echo "::group::جولة $i/$ROUNDS — $(date -u +%H:%M) UTC"
+            if (cd scripts/sync && node weather-sync.js); then
+              if [ "$DRY_RUN" != "true" ] && [ -n "$(git status --porcelain weather)" ]; then
+                git add weather
+                git commit -q -m "weather: sync $(date -u +%Y-%m-%dT%H:%MZ) [skip ci]"
+                git pull -q --rebase origin main || true
+                git push -q origin HEAD:main && echo "✅ رُفعت البيانات"
+                gh api -X POST "repos/${{ github.repository }}/pages/builds" --silent && echo "✅ طُلب بناء Pages" || true
+              fi
+            else
+              echo "⚠️ فشلت هذه الجولة — نكمل في الجولة التالية"
+            fi
+            echo "::endgroup::"
+            [ "$i" -lt "$ROUNDS" ] || break
+            elapsed=$(( $(date +%s) - start ))
+            sleep $(( 1800 - elapsed > 60 ? 1800 - elapsed : 60 ))
+          done
