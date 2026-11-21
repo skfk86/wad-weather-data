@@ -26,6 +26,7 @@ concurrency:
 permissions:
   contents: write
   pages: write
+  actions: write
 
 jobs:
   sync:
@@ -77,3 +78,11 @@ jobs:
             elapsed=$(( $(date +%s) - start ))
             sleep $(( 1800 - elapsed > 60 ? 1800 - elapsed : 60 ))
           done
+
+      # [SYNC v4] جدولة GitHub قد تتأخر ساعات؛ المهمة الطويلة تشغّل التالية بنفسها عند انتهائها
+      - name: Relay next run
+        if: always() && github.event_name != 'workflow_dispatch' || (github.event_name == 'workflow_dispatch' && inputs.rounds != '1')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api -X POST "repos/${{ github.repository }}/actions/workflows/weather-sync.yml/dispatches" -f ref=main -f 'inputs[rounds]=11' && echo "✅ جُدولت المهمة التالية" || echo "⚠️ تعذّر التتابع — ستتولاها الجدولة"
